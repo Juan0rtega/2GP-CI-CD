@@ -1,4 +1,4 @@
-name: Scratch - On demand (create admin user)
+name: Scratch - On demand (create admin user + password reset)
 
 on:
   workflow_dispatch:
@@ -101,8 +101,7 @@ jobs:
           FIRST="${{ inputs.first_name }}"
           LAST="${{ inputs.last_name }}"
 
-          # Build a globally-unique username based on the provided email.
-          # Format: local+gh<runid>@domain
+          # Build a globally-unique username based on the provided email
           LOCAL="${EMAIL%@*}"
           DOMAIN="${EMAIL#*@}"
           if [ "$LOCAL" = "$EMAIL" ] || [ "$DOMAIN" = "$EMAIL" ]; then
@@ -122,7 +121,7 @@ jobs:
             exit 1
           fi
 
-          # Required fields for User creation
+          # Generate alias (<= 8 chars, alphanumeric)
           ALIAS2=$(echo "${FIRST:0:1}${LAST:0:4}" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')
           if [ -z "$ALIAS2" ]; then ALIAS2="admin"; fi
 
@@ -143,16 +142,24 @@ jobs:
           echo "username=$USERNAME" >> "$GITHUB_OUTPUT"
           echo "Created new admin user: $USERNAME ($USER_ID)"
 
-      - name: Output next steps (login as)
+      - name: Send password reset email to new admin user
         shell: bash
         run: |
           set -euo pipefail
           ALIAS="${{ steps.alias.outputs.value }}"
-          echo "Scratch alias: $ALIAS"
+          USER_ID="${{ steps.newuser.outputs.user_id }}"
+
+          cat > reset_password.apex <<APEX
+          System.resetPassword('${USER_ID}', true);
+          APEX
+
+          sf apex run --target-org "$ALIAS" --file reset_password.apex
+          rm -f reset_password.apex
+
+      - name: Output next steps
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Scratch alias: ${{ steps.alias.outputs.value }}"
           echo "New admin username: ${{ steps.newuser.outputs.username }}"
-          echo "New admin userId:   ${{ steps.newuser.outputs.user_id }}"
-          echo ""
-          echo "To use the new user:"
-          echo "1) Open the org with the default user (same auth used by the workflow):"
-          echo "   sf org open --target-org \"$ALIAS\""
-          echo "2) In Salesforce UI: Setup -> Users -> find '${{ steps.newuser.outputs.username }}' -> Login"
+          echo "Password reset email sent (if Deliverability allows emails)."
