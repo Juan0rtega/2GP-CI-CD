@@ -12,6 +12,10 @@ permissions:
   contents: write
   pull-requests: write
 
+concurrency:
+  group: package-release
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -21,13 +25,14 @@ jobs:
         with:
           fetch-depth: 0
 
-
-      - name: Install jq
+      - name: Install SF CLI + jq
         shell: bash
         run: |
           set -euo pipefail
-          npm install --global @salesforce/cli 
+          npm install --global @salesforce/cli
           sf --version
+          sf plugins --core
+          sf plugins install @salesforce/plugin-packaging
           sudo apt-get update
           sudo apt-get install -y jq
 
@@ -39,27 +44,47 @@ jobs:
           sf org login sfdx-url --sfdx-url-file devhub_auth_url.txt --alias DevHub --set-default-dev-hub
           rm -f devhub_auth_url.txt
 
+          # Helpful debug (safe)
+          sf org display --target-org DevHub --verbose || true
+
       - name: Create package version
         id: create
         shell: bash
         run: |
           set -euo pipefail
-          OUT=$(sf package version create \
+
+          # Capture JSON even if sf returns non-zero
+          set +e
+          sf package version create \
             --target-dev-hub DevHub \
             --package "testPackage" \
             --installation-key-bypass \
             --version-number "${{ inputs.version_number }}" \
             --code-coverage \
             --wait 60 \
-            --json)
+            --json > create.json
+          SF_EXIT=$?
+          set -e
 
-          echo "$OUT" > create.json
-          VERSION_ID=$(jq -r '.result.SubscriberPackageVersionId' create.json)
-          if [ -z "$VERSION_ID" ] || [ "$VERSION_ID" = "null" ]; then
-            echo "Could not parse SubscriberPackageVersionId from sf output"
-            cat create.json
+          echo "=== sf exit code: $SF_EXIT ==="
+          echo "=== create.json ==="
+          cat create.json
+          echo "==================="
+
+          STATUS=$(jq -r '.status // empty' create.json)
+          if [ "$SF_EXIT" -ne 0 ] || [ "$STATUS" = "1" ]; then
+            echo "sf failed to create package version."
+            jq -r '.name // empty' create.json || true
+            jq -r '.message // empty' create.json || true
             exit 1
           fi
+
+          VERSION_ID=$(jq -r '.result.SubscriberPackageVersionId // empty' create.json)
+          if [ -z "$VERSION_ID" ]; then
+            echo "Could not find SubscriberPackageVersionId in create.json"
+            exit 1
+          fi
+
           echo "version_id=$VERSION_ID" >> "$GITHUB_OUTPUT"
           echo "Created version: $VERSION_ID"
 
