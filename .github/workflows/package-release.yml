@@ -1,10 +1,10 @@
-name: Package - Release (PR + Promote)
+name: Package - Beta (Create Version + PR)
 
 on:
   workflow_dispatch:
     inputs:
       version_number:
-        description: "e.g. 0.1.0.1"
+        description: "e.g. 0.1.0.4"
         required: true
         type: string
 
@@ -13,11 +13,11 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: package-release
+  group: package-beta
   cancel-in-progress: false
 
 jobs:
-  release:
+  beta:
     runs-on: ubuntu-latest
 
     steps:
@@ -43,17 +43,14 @@ jobs:
           echo "${{ secrets.DEVHUB_SFDX_AUTH_URL }}" > devhub_auth_url.txt
           sf org login sfdx-url --sfdx-url-file devhub_auth_url.txt --alias DevHub --set-default-dev-hub
           rm -f devhub_auth_url.txt
-
-          # Helpful debug (safe)
           sf org display --target-org DevHub --verbose || true
 
-      - name: Create package version
+      - name: Create package version (not promoted)
         id: create
         shell: bash
         run: |
           set -euo pipefail
 
-          # Capture JSON even if sf returns non-zero
           set +e
           sf package version create \
             --target-dev-hub DevHub \
@@ -88,15 +85,6 @@ jobs:
           echo "version_id=$VERSION_ID" >> "$GITHUB_OUTPUT"
           echo "Created version: $VERSION_ID"
 
-      - name: Promote package version
-        shell: bash
-        run: |
-          set -euo pipefail
-          sf package version promote \
-            --target-dev-hub DevHub \
-            --package "${{ steps.create.outputs.version_id }}" \
-            --no-prompt
-
       - name: Update sfdx-project.json (packageAliases)
         shell: bash
         run: |
@@ -104,7 +92,6 @@ jobs:
           VERSION="${{ inputs.version_number }}"
           VERSION_ID="${{ steps.create.outputs.version_id }}"
 
-          # Adds: "testPackage@<version>": "04t..."
           TMP=$(mktemp)
           jq --arg k "testPackage@$VERSION" --arg v "$VERSION_ID" \
             '.packageAliases[$k] = $v' sfdx-project.json > "$TMP"
@@ -115,14 +102,14 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${{ inputs.version_number }}"
-          BRANCH="release/${VERSION}"
+          BRANCH="beta/${VERSION}"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           git checkout -b "$BRANCH"
           git add sfdx-project.json
-          git commit -m "Release: testPackage $VERSION"
+          git commit -m "Beta: testPackage $VERSION"
           git push origin "$BRANCH"
 
       - name: Create PR to main
@@ -132,10 +119,10 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${{ inputs.version_number }}"
-          BRANCH="release/${VERSION}"
+          BRANCH="beta/${VERSION}"
 
           gh pr create \
-            --title "Release testPackage $VERSION" \
-            --body "Automated release PR. Promoted package version: ${{ steps.create.outputs.version_id }}" \
+            --title "Beta testPackage $VERSION" \
+            --body "Automated beta PR. Created package version (NOT promoted): ${{ steps.create.outputs.version_id }}" \
             --base main \
             --head "$BRANCH"
