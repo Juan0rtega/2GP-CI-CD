@@ -1,10 +1,140 @@
-name: Placeholder - Scratch Org
+name: Scratch - On demand (set user email)
 
 on:
   workflow_dispatch:
+    inputs:
+      email:
+        description: "Email to set on the admin user"
+        required: true
+        type: string
+      first_name:
+        description: "First name for the admin user (optional)"
+        required: false
+        default: ""
+        type: string
+      last_name:
+        description: "Last name for the admin user (optional)"
+        required: false
+        default: ""
+        type: string
+      days:
+        description: "Scratch org duration in days"
+        required: true
+        default: "3"
+        type: string
+      alias:
+        description: "Scratch org alias (optional)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scratch-on-demand
+  cancel-in-progress: false
 
 jobs:
-  noop:
+  create:
     runs-on: ubuntu-latest
+
     steps:
-      - run: echo "Placeholder workflow"
+      - uses: actions/checkout@v4
+
+      - name: Install SF CLI + jq
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global @salesforce/cli
+          sf --version
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Authenticate Dev Hub
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.DEVHUB_SFDX_AUTH_URL }}" > devhub_auth_url.txt
+          sf org login sfdx-url --sfdx-url-file devhub_auth_url.txt --alias DevHub --set-default-dev-hub
+          rm -f devhub_auth_url.txt
+
+      - name: Resolve alias
+        id: alias
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.alias }}" ]; then
+            echo "value=${{ inputs.alias }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=scratch-${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create scratch org
+        shell: bash
+        run: |
+          set -euo pipefail
+          ALIAS="${{ steps.alias.outputs.value }}"
+
+          sf org create scratch \
+            --target-dev-hub DevHub \
+            --definition-file config/project-scratch-def.json \
+            --alias "$ALIAS" \
+            --duration-days "${{ inputs.days }}" \
+            --set-default \
+            --wait 20
+
+          sf org display --target-org "$ALIAS" --json > org.json
+          cat org.json
+
+      - name: Deploy metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          ALIAS="${{ steps.alias.outputs.value }}"
+          sf project deploy start --target-org "$ALIAS" --wait 30
+
+      - name: Update admin user email (and optional name)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ALIAS="${{ steps.alias.outputs.value }}"
+
+          # Get the current user's Id (the one authenticated in this org)
+          USER_ID=$(sf org display --target-org "$ALIAS" --json | jq -r '.result.userId // empty')
+          if [ -z "$USER_ID" ]; then
+            echo "Could not determine userId from sf org display"
+            exit 1
+          fi
+
+          EMAIL="${{ inputs.email }}"
+          FIRST="${{ inputs.first_name }}"
+          LAST="${{ inputs.last_name }}"
+
+          # Build values string safely
+          VALUES="Email='${EMAIL}'"
+          if [ -n "$FIRST" ]; then VALUES="$VALUES FirstName='${FIRST}'"; fi
+          if [ -n "$LAST" ]; then VALUES="$VALUES LastName='${LAST}'"; fi
+
+          echo "Updating User $USER_ID with: $VALUES"
+          sf data update record \
+            --target-org "$ALIAS" \
+            --sobject User \
+            --record-id "$USER_ID" \
+            --values "$VALUES"
+
+      - name: (Optional) Run post-setup Apex
+        if: ${{ hashFiles('scripts/apex/setup/00_post_setup.apex') != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ALIAS="${{ steps.alias.outputs.value }}"
+          sf apex run --target-org "$ALIAS" --file scripts/apex/setup/00_post_setup.apex
+
+      - name: Output access info
+        shell: bash
+        run: |
+          set -euo pipefail
+          ALIAS="${{ steps.alias.outputs.value }}"
+          echo "Alias: $ALIAS"
+          sf org display --target-org "$ALIAS" --verbose
