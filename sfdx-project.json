@@ -15,6 +15,14 @@
       "default": false,
       "package": "MTest",
       "versionDescription": ""
+    },
+    {
+      "versionName": "ver 0.1",
+      "versionNumber": "0.1.0.NEXT",
+      "path": "packTest",
+      "default": false,
+      "package": "MT-test",
+      "versionDescription": ""
     }
   ],
   "name": "juan-test",
@@ -23,6 +31,8 @@
   "sourceApiVersion": "65.0",
   "packageAliases": {
     "testPackage": "0Hofj00000017QrCAI",
-    "MTest": "0Hofj0000001F8HCAU"
+    "MTest": "0Hofj0000001F8HCAU",
+    "MT-test": "0Hofj0000001F9tCAE",
+    "testPackage@0.1.0-1": "04tfj000000EOQfAAO"
   }
 }
