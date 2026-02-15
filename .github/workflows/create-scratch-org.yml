@@ -1,21 +1,19 @@
-name: Scratch - On demand (set user email)
+name: Scratch - On demand (create admin user)
 
 on:
   workflow_dispatch:
     inputs:
       email:
-        description: "Email to set on the admin user"
+        description: "Email for the new admin user"
         required: true
         type: string
       first_name:
-        description: "First name for the admin user (optional)"
-        required: false
-        default: ""
+        description: "First name for the new admin user"
+        required: true
         type: string
       last_name:
-        description: "Last name for the admin user (optional)"
-        required: false
-        default: ""
+        description: "Last name for the new admin user"
+        required: true
         type: string
       days:
         description: "Scratch org duration in days"
@@ -59,7 +57,7 @@ jobs:
           sf org login sfdx-url --sfdx-url-file devhub_auth_url.txt --alias DevHub --set-default-dev-hub
           rm -f devhub_auth_url.txt
 
-      - name: Resolve alias
+      - name: Resolve scratch alias
         id: alias
         shell: bash
         run: |
@@ -84,57 +82,77 @@ jobs:
             --set-default \
             --wait 20
 
-          sf org display --target-org "$ALIAS" --json > org.json
-          cat org.json
+          sf org display --target-org "$ALIAS" --verbose
 
-      - name: Deploy metadata
+      - name: Deploy metadata (optional)
         shell: bash
         run: |
           set -euo pipefail
           ALIAS="${{ steps.alias.outputs.value }}"
           sf project deploy start --target-org "$ALIAS" --wait 30
 
-      - name: Update admin user email (and optional name)
+      - name: Create new System Admin user
+        id: newuser
         shell: bash
         run: |
           set -euo pipefail
           ALIAS="${{ steps.alias.outputs.value }}"
-
-          # Get the current user's Id (the one authenticated in this org)
-          USER_ID=$(sf org display --target-org "$ALIAS" --json | jq -r '.result.userId // empty')
-          if [ -z "$USER_ID" ]; then
-            echo "Could not determine userId from sf org display"
-            exit 1
-          fi
-
           EMAIL="${{ inputs.email }}"
           FIRST="${{ inputs.first_name }}"
           LAST="${{ inputs.last_name }}"
 
-          # Build values string safely
-          VALUES="Email='${EMAIL}'"
-          if [ -n "$FIRST" ]; then VALUES="$VALUES FirstName='${FIRST}'"; fi
-          if [ -n "$LAST" ]; then VALUES="$VALUES LastName='${LAST}'"; fi
+          # Build a globally-unique username based on the provided email.
+          # Format: local+gh<runid>@domain
+          LOCAL="${EMAIL%@*}"
+          DOMAIN="${EMAIL#*@}"
+          if [ "$LOCAL" = "$EMAIL" ] || [ "$DOMAIN" = "$EMAIL" ]; then
+            echo "Input email must contain '@': $EMAIL"
+            exit 1
+          fi
+          USERNAME="${LOCAL}+gh${{ github.run_id }}@${DOMAIN}"
 
-          echo "Updating User $USER_ID with: $VALUES"
-          sf data update record \
+          # Get System Administrator profile Id
+          PROFILE_ID=$(sf data query \
+            --target-org "$ALIAS" \
+            --query "SELECT Id FROM Profile WHERE Name = 'System Administrator' LIMIT 1" \
+            --json | jq -r '.result.records[0].Id // empty')
+
+          if [ -z "$PROFILE_ID" ]; then
+            echo "Could not find System Administrator profile Id"
+            exit 1
+          fi
+
+          # Required fields for User creation
+          ALIAS2=$(echo "${FIRST:0:1}${LAST:0:4}" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')
+          if [ -z "$ALIAS2" ]; then ALIAS2="admin"; fi
+
+          OUT=$(sf data create record \
             --target-org "$ALIAS" \
             --sobject User \
-            --record-id "$USER_ID" \
-            --values "$VALUES"
+            --values "FirstName='${FIRST}' LastName='${LAST}' Email='${EMAIL}' Username='${USERNAME}' Alias='${ALIAS2}' TimeZoneSidKey='America/Mexico_City' LocaleSidKey='es_MX' EmailEncodingKey='UTF-8' LanguageLocaleKey='es_MX' ProfileId='${PROFILE_ID}'" \
+            --json)
 
-      - name: (Optional) Run post-setup Apex
-        if: ${{ hashFiles('scripts/apex/setup/00_post_setup.apex') != '' }}
+          echo "$OUT" | jq -r .
+          USER_ID=$(echo "$OUT" | jq -r '.result.id // empty')
+          if [ -z "$USER_ID" ]; then
+            echo "Could not parse new user id"
+            exit 1
+          fi
+
+          echo "user_id=$USER_ID" >> "$GITHUB_OUTPUT"
+          echo "username=$USERNAME" >> "$GITHUB_OUTPUT"
+          echo "Created new admin user: $USERNAME ($USER_ID)"
+
+      - name: Output next steps (login as)
         shell: bash
         run: |
           set -euo pipefail
           ALIAS="${{ steps.alias.outputs.value }}"
-          sf apex run --target-org "$ALIAS" --file scripts/apex/setup/00_post_setup.apex
-
-      - name: Output access info
-        shell: bash
-        run: |
-          set -euo pipefail
-          ALIAS="${{ steps.alias.outputs.value }}"
-          echo "Alias: $ALIAS"
-          sf org display --target-org "$ALIAS" --verbose
+          echo "Scratch alias: $ALIAS"
+          echo "New admin username: ${{ steps.newuser.outputs.username }}"
+          echo "New admin userId:   ${{ steps.newuser.outputs.user_id }}"
+          echo ""
+          echo "To use the new user:"
+          echo "1) Open the org with the default user (same auth used by the workflow):"
+          echo "   sf org open --target-org \"$ALIAS\""
+          echo "2) In Salesforce UI: Setup -> Users -> find '${{ steps.newuser.outputs.username }}' -> Login"
