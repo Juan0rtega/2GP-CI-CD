@@ -1,0 +1,115 @@
+name: Package - Release (PR + Promote)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_number:
+        description: "e.g. 0.1.0.1"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: salesforcecli/setup-sf@v2
+
+      - name: Install jq
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Authenticate Dev Hub
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.DEVHUB_SFDX_AUTH_URL }}" > devhub_auth_url.txt
+          sf org login sfdx-url --sfdx-url-file devhub_auth_url.txt --alias DevHub --set-default-dev-hub
+          rm -f devhub_auth_url.txt
+
+      - name: Create package version
+        id: create
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=$(sf package version create \
+            --target-dev-hub DevHub \
+            --package "testPackage" \
+            --installation-key-bypass \
+            --version-number "${{ inputs.version_number }}" \
+            --code-coverage \
+            --wait 60 \
+            --json)
+
+          echo "$OUT" > create.json
+          VERSION_ID=$(jq -r '.result.SubscriberPackageVersionId' create.json)
+          if [ -z "$VERSION_ID" ] || [ "$VERSION_ID" = "null" ]; then
+            echo "Could not parse SubscriberPackageVersionId from sf output"
+            cat create.json
+            exit 1
+          fi
+          echo "version_id=$VERSION_ID" >> "$GITHUB_OUTPUT"
+          echo "Created version: $VERSION_ID"
+
+      - name: Promote package version
+        shell: bash
+        run: |
+          set -euo pipefail
+          sf package version promote \
+            --target-dev-hub DevHub \
+            --package "${{ steps.create.outputs.version_id }}" \
+            --no-prompt
+
+      - name: Update sfdx-project.json (packageAliases)
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.version_number }}"
+          VERSION_ID="${{ steps.create.outputs.version_id }}"
+
+          # Adds: "testPackage@<version>": "04t..."
+          TMP=$(mktemp)
+          jq --arg k "testPackage@$VERSION" --arg v "$VERSION_ID" \
+            '.packageAliases[$k] = $v' sfdx-project.json > "$TMP"
+          mv "$TMP" sfdx-project.json
+
+      - name: Create branch + commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.version_number }}"
+          BRANCH="release/${VERSION}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git checkout -b "$BRANCH"
+          git add sfdx-project.json
+          git commit -m "Release: testPackage $VERSION"
+          git push origin "$BRANCH"
+
+      - name: Create PR to main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.version_number }}"
+          BRANCH="release/${VERSION}"
+
+          gh pr create \
+            --title "Release testPackage $VERSION" \
+            --body "Automated release PR. Promoted package version: ${{ steps.create.outputs.version_id }}" \
+            --base main \
+            --head "$BRANCH"
