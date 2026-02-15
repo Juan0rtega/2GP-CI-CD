@@ -21,12 +21,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: salesforcecli/setup-sf@v2
 
       - name: Install jq
         shell: bash
         run: |
           set -euo pipefail
+          npm install --global @salesforce/cli 
+          sf --version
           sudo apt-get update
           sudo apt-get install -y jq
 
