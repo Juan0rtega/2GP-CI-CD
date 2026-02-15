@@ -7,6 +7,14 @@
       "default": true,
       "package": "testPackage",
       "versionDescription": ""
+    },
+    {
+      "versionName": "ver 0.1",
+      "versionNumber": "0.1.0.NEXT",
+      "path": "MTtest",
+      "default": false,
+      "package": "MTest",
+      "versionDescription": ""
     }
   ],
   "name": "juan-test",
@@ -14,6 +22,7 @@
   "sfdcLoginUrl": "https://login.salesforce.com",
   "sourceApiVersion": "65.0",
   "packageAliases": {
-    "testPackage": "0Hofj00000017QrCAI"
+    "testPackage": "0Hofj00000017QrCAI",
+    "MTest": "0Hofj0000001F8HCAU"
   }
 }
